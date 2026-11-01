@@ -270,7 +270,7 @@ export async function POST(request: NextRequest) {
     try { parsed = new URL(input); } catch { return NextResponse.json({ error: "لینک معتبر وارد کنید." }, { status: 400 }); }
     if (!(await publicUrl(parsed.href))) return NextResponse.json({ error: "فقط لینک عمومی HTTP یا HTTPS مجاز است." }, { status: 400 });
     const deadline = Date.now() + REQUEST_BUDGET_MS;
-    if (parsed.hostname.toLowerCase().replace(/^www\\./, "") === "lamizcoffee.com") {
+    if (["lamizcoffee.com", "www.lamizcoffee.com"].includes(parsed.hostname.toLowerCase())) {
       const directStore = await scrapeWooCommerce(cheerio.load('<html><body></body></html>'), parsed.href, deadline, true);
       if (directStore) {
         return NextResponse.json({ source: parsed.href, products: directStore.products, categories: directStore.categories, stats: { products: directStore.products.length, categories: directStore.categories.length }, truncated: directStore.truncated });
