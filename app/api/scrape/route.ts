@@ -270,6 +270,12 @@ export async function POST(request: NextRequest) {
     try { parsed = new URL(input); } catch { return NextResponse.json({ error: "لینک معتبر وارد کنید." }, { status: 400 }); }
     if (!(await publicUrl(parsed.href))) return NextResponse.json({ error: "فقط لینک عمومی HTTP یا HTTPS مجاز است." }, { status: 400 });
     const deadline = Date.now() + REQUEST_BUDGET_MS;
+    if (/^(?:www\\.)?lamizcoffee\\.com$/i.test(parsed.hostname)) {
+      const directStore = await scrapeWooCommerce(cheerio.load('<html><body></body></html>'), parsed.href, deadline, true);
+      if (directStore) {
+        return NextResponse.json({ source: parsed.href, products: directStore.products, categories: directStore.categories, stats: { products: directStore.products.length, categories: directStore.categories.length }, truncated: directStore.truncated });
+      }
+    }
     const response = await fetchPublicPage(parsed.href, deadline);
     if (!response.ok) {
       const hint = response.status === 504 ? "سایت مبدأ پاسخ ۵۰۴ داد؛ درخواست خودکار دوباره تلاش شد. کمی بعد دوباره امتحان کنید یا لینک مستقیم صفحه منو را بدهید." : `صفحه با وضعیت ${response.status} دریافت نشد.`;
