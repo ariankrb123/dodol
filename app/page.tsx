@@ -11,7 +11,9 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
-  const [wooProductsFile, setWooProductsFile] = useState<File | null>(null);\n  const [wooCategoriesFile, setWooCategoriesFile] = useState<File | null>(null);\n  const [manualError, setManualError] = useState("");
+  const [wooProductsFile, setWooProductsFile] = useState<File | null>(null);
+  const [wooCategoriesFile, setWooCategoriesFile] = useState<File | null>(null);
+  const [manualError, setManualError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sendError, setSendError] = useState("");
