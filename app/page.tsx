@@ -10,7 +10,8 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState("");\n  const [wooProductsFile, setWooProductsFile] = useState<File | null>(null);\n  const [wooCategoriesFile, setWooCategoriesFile] = useState<File | null>(null);\n  const [manualError, setManualError] = useState("");
+  const [exportError, setExportError] = useState("");
+  const [wooProductsFile, setWooProductsFile] = useState<File | null>(null);\n  const [wooCategoriesFile, setWooCategoriesFile] = useState<File | null>(null);\n  const [manualError, setManualError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sendError, setSendError] = useState("");
@@ -43,7 +44,7 @@ export default function Home() {
         const primary = itemCategories[0];
         const category = String(primary?.name || primary || "بدون دسته");
         const descriptionSource = item.short_description || item.description || "";
-        const description = typeof document === "undefined" ? String(descriptionSource) : new DOMParser().parseFromString(String(descriptionSource), "text/html").body.textContent?.replace(/\\s+/g, " ").trim() || "";
+        const description = typeof document === "undefined" ? String(descriptionSource) : new DOMParser().parseFromString(String(descriptionSource), "text/html").body.textContent?.replace(/\s+/g, " ").trim() || "";
         const image = item.images?.[0]?.src || item.main_image || item.image || "";
         return [{ name, englishName: "", description, price: String(item.prices?.price ?? item.price ?? ""), image, category }];
       });
@@ -144,7 +145,8 @@ export default function Home() {
     </section>
     {menu && <section className="panel">
       <div className="section-head"><div className="section-title"><span className="num">۲</span>بازبینی اطلاعات استخراج‌شده</div><span className="badge">آماده انتقال</span></div>
-      <div className="counts"><span className="badge">{menu.products.length} محصول</span><span className="badge">{categoryCount} دسته‌بندی</span></div>\n      {menu.truncated && <div className="alert info">به دلیل محدودیت صفحه‌بندی، فقط ۵۰۰ محصول اول از سرویس فروشگاه دریافت شده‌اند.</div>}
+      <div className="counts"><span className="badge">{menu.products.length} محصول</span><span className="badge">{categoryCount} دسته‌بندی</span></div>
+      {menu.truncated && <div className="alert info">به دلیل محدودیت صفحه‌بندی، فقط ۵۰۰ محصول اول از سرویس فروشگاه دریافت شده‌اند.</div>}
       <div className="toolbar">
         <span className="label" style={{margin:0}}>محصولات و دسته‌بندی‌های صفحه</span>
         <div className="export-actions">
