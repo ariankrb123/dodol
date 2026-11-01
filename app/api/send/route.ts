@@ -32,13 +32,25 @@ export async function POST(request: NextRequest) {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(payload), cache: "no-store", signal: AbortSignal.timeout(15000),
     });
-    const result = await response.json().catch(async () => ({ message: (await response.text()).slice(0, 500) }));
+    const raw = await response.text();
+    let result: any = {};
+    try { result = raw ? JSON.parse(raw) : {}; } catch { result = { message: raw.slice(0, 500) }; }
     if (!response.ok) return NextResponse.json({ error: "سرویس مقصد داده‌ها را نپذیرفت.", details: result.message || result.error || `HTTP ${response.status}` }, { status: 502 });
     if (result?.success === false || result?.status === "error") return NextResponse.json({ error: "سرویس مقصد خطا گزارش کرد.", details: result.message || result.error || "انتقال کامل نشد." }, { status: 502 });
-    const expected = data.products.length + data.categories.length;
-    const reported = result?.data?.imported_count ?? result?.imported_count ?? result?.data?.count;
-    if (typeof reported === "number" && reported < expected) return NextResponse.json({ error: "تعداد موارد تأییدشده با داده‌های ارسالی برابر نیست.", details: `ارسال ${expected} مورد، تأیید ${reported} مورد` }, { status: 502 });
-    return NextResponse.json({ ok: true, message: "سرویس مقصد درخواست را پذیرفت.", counts: { products: data.products.length, categories: data.categories.length }, destination: result });
+
+    const expectedProducts = data.products.length;
+    const expectedCategories = data.categories.length;
+    const expectedTotal = expectedProducts + expectedCategories;
+    const productCount = result?.data?.products_imported ?? result?.products_imported ?? result?.data?.counts?.products ?? result?.counts?.products;
+    const categoryCount = result?.data?.categories_imported ?? result?.categories_imported ?? result?.data?.counts?.categories ?? result?.counts?.categories;
+    const totalCount = result?.data?.imported_count ?? result?.imported_count ?? result?.data?.count;
+    const verified = (productCount === expectedProducts && categoryCount === expectedCategories) || totalCount === expectedTotal;
+    return NextResponse.json({
+      ok: true, accepted: true, verified,
+      message: verified ? "تعداد موارد ثبت‌شده با موارد ارسالی برابر است." : "پاسخ موفق دریافت شد، اما پاسخ API تعداد موارد ثبت‌شده را اعلام نکرد.",
+      counts: { products: expectedProducts, categories: expectedCategories },
+      reportedCounts: { products: productCount ?? null, categories: categoryCount ?? null, total: totalCount ?? null },
+    });
   } catch {
     return NextResponse.json({ error: "ارتباط با سرویس توکن یا مقصد برقرار نشد. تنظیمات و دسترسی شبکه را بررسی کنید." }, { status: 502 });
   }
