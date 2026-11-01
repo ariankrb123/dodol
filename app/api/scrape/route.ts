@@ -137,7 +137,7 @@ async function fetchApi(url: string, deadline: number, accept = "application/jso
   }
   return response;
 }
-async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: number): Promise<{ products: Product[]; categories: Category[] } | null> {
+async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: number): Promise<{ products: Product[]; categories: Category[]; truncated: boolean } | null> {
   const markup = $.html().toLowerCase();
   if (!markup.includes("woocommerce") && !markup.includes("wc-blocks")) return null;
   const origin = new URL(base).origin;
