@@ -102,19 +102,19 @@ function pageProducts($: cheerio.CheerioAPI, base: string): Product[] {
   const selectors = [
     '[itemtype*="Product"]', '[itemtype*="MenuItem"]', '[data-product]',
     '.product-card', '.product-item', '.menu-item-card', '.food-item', '.food-menu-item',
-    '.menu-product', '.elementor-widget-wrap .product',
+    '.menu-product', '.elementor-widget-wrap .product', 'li.elementor-price-list-item',
   ].join(",");
   const products: Product[] = [];
   const seen = new Set<string>();
   $(selectors).each((_, el) => {
     const node = $(el);
     if (node.parents("nav, header, footer").length > 0 || node.parents(selectors).length > 0) return;
-    const name = clean(node.find('[itemprop="name"], h2, h3, h4, .product-title, .menu-item-title, [class*="title"]').first().text() || node.attr("data-name"));
+    const name = clean(node.find('[itemprop="name"], h2, h3, h4, .product-title, .menu-item-title, .elementor-price-list-title, [class*="title"]').first().text() || node.attr("data-name"));
     if (!name || name.length > 120) return;
     const imageNode = node.find("img").first();
     const image = absoluteUrl(imageNode.attr("data-src") || imageNode.attr("data-lazy-src") || imageNode.attr("src") || imageNode.attr("srcset")?.split(",")[0]?.trim().split(" ")[0], base);
-    const description = clean(node.find('[itemprop="description"], .description, [class*="description"], p').first().text());
-    const price = clean(node.find('[itemprop="price"], .price, [class*="price"]').first().text() || node.attr("data-price"));
+    const description = clean(node.find('[itemprop="description"], .description, .elementor-price-list-description, [class*="description"], p').first().text());
+    const price = clean(node.find('[itemprop="price"], .price, .elementor-price-list-price, [class*="price"]').first().text() || node.attr("data-price"));
     if (!image && !description && !price && !node.attr("itemtype") && !node.attr("data-product")) return;
     const category = clean(node.closest("section").find("h2,h3").first().text() || node.closest('[class*="category"], [class*="section"]').find("h2,h3,h4").first().text()) || "بدون دسته";
     const key = name.toLocaleLowerCase("fa");
@@ -136,6 +136,53 @@ async function fetchApi(url: string, deadline: number, accept = "application/jso
     await wait(400 * (attempt + 1));
   }
   return response;
+}
+async function scrapeWordPressRest(base: string, deadline: number): Promise<{ products: Product[]; categories: Category[]; truncated: boolean } | null> {
+  const origin = new URL(base).origin;
+  const typesUrl = new URL("/wp-json/wp/v2/types?context=view", origin);
+  if (!(await publicUrl(typesUrl.href))) return null;
+  const typesResponse = await fetchApi(typesUrl.href, deadline);
+  if (!typesResponse?.ok) return null;
+  const types = await typesResponse.json();
+  if (!types || typeof types !== "object") return null;
+  const candidates = Object.values(types as Record<string, any>).filter((type) => {
+    const label = `${type?.slug || ""} ${type?.rest_base || ""} ${type?.name || ""}`.toLowerCase();
+    return type?.rest_base && type?.rest_base !== "pages" && type?.rest_base !== "posts" && /product|menu|food|drink|item|dish/.test(label);
+  }).slice(0, 4);
+  const products: Product[] = [];
+  const categoryMap = new Map<string, Category>();
+  let truncated = false;
+  for (const type of candidates) {
+    for (let page = 1; page <= 3; page++) {
+      const endpoint = new URL(`/wp-json/wp/v2/${encodeURIComponent(type.rest_base)}`, origin);
+      endpoint.searchParams.set("per_page", "100"); endpoint.searchParams.set("page", String(page)); endpoint.searchParams.set("_embed", "1");
+      if (!(await publicUrl(endpoint.href))) continue;
+      const response = await fetchApi(endpoint.href, deadline);
+      if (!response?.ok) break;
+      const rows = await response.json();
+      if (!Array.isArray(rows)) break;
+      for (const row of rows) {
+        const title = clean(cheerio.load(String(row?.title?.rendered || "")).text());
+        if (!title) continue;
+        const rendered = (value: unknown) => clean(cheerio.load(String(value || "")).text());
+        const terms = Array.isArray(row?._embedded?.["wp:term"]) ? row._embedded["wp:term"].flat() : [];
+        const term = terms.find((entry: any) => /categor|menu|product|food|drink/i.test(`${entry?.taxonomy || ""} ${entry?.name || ""}`));
+        const category = clean(term?.name) || "بدون دسته";
+        const image = absoluteUrl(row?._embedded?.["wp:featuredmedia"]?.[0]?.source_url || row?.featured_image_src || row?.meta?.image, base);
+        const meta = row?.meta || {};
+        const price = String(meta.price ?? meta._price ?? row?.price ?? "");
+        const description = rendered(row?.excerpt?.rendered || row?.content?.rendered);
+        products.push({ name: title, englishName: "", description, price, image, category });
+        const group = categoryMap.get(category) || { title: category, image: "", items: [] };
+        group.items.push(title); if (!group.image) group.image = image; categoryMap.set(category, group);
+      }
+      if (rows.length < 100) break;
+      if (page === 3) truncated = true;
+    }
+    if (Date.now() >= deadline - 1000) break;
+  }
+  if (!products.length) return null;
+  return { products, categories: [...categoryMap.values()], truncated };
 }
 async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: number, force = false): Promise<{ products: Product[]; categories: Category[]; truncated: boolean } | null> {
   const markup = $.html().toLowerCase();
@@ -290,7 +337,8 @@ export async function POST(request: NextRequest) {
     const $ = cheerio.load(html);
     const specialized = await scrapeVoria($, response.url, deadline);
     const commerce = specialized ? null : await scrapeWooCommerce($, response.url, deadline);
-    const extracted = specialized || commerce;
+    const wordpress = specialized || commerce ? null : await scrapeWordPressRest(response.url, deadline);
+    const extracted = specialized || commerce || wordpress;
     const products = extracted?.products || jsonLdProducts($, response.url);
     if (!extracted) {
       const fromPage = pageProducts($, response.url);
@@ -310,3 +358,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
+
