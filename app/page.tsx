@@ -10,7 +10,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState("");
+  const [exportError, setExportError] = useState("");\n  const [wooProductsFile, setWooProductsFile] = useState<File | null>(null);\n  const [wooCategoriesFile, setWooCategoriesFile] = useState<File | null>(null);\n  const [manualError, setManualError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sendError, setSendError] = useState("");
@@ -25,6 +25,54 @@ export default function Home() {
       setMenu(result);
     } catch (e) { setError(e instanceof Error ? e.message : "استخراج منو انجام نشد."); }
     finally { setBusy(false); }
+  }
+  async function importWooJson() {
+    if (!wooProductsFile) { setManualError("فایل JSON محصولات را انتخاب کنید."); return; }
+    setManualError(""); setError(""); setNotice(""); setSendError("");
+    try {
+      const productJson = JSON.parse(await wooProductsFile.text());
+      const rawProducts = Array.isArray(productJson) ? productJson : productJson.products;
+      if (!Array.isArray(rawProducts)) throw new Error("فایل محصولات باید آرایه JSON ووکامرس باشد.");
+      const categoryJson = wooCategoriesFile ? JSON.parse(await wooCategoriesFile.text()) : [];
+      const rawCategories = Array.isArray(categoryJson) ? categoryJson : categoryJson.categories || [];
+      const categoryById = new Map<string, any>(rawCategories.map((category: any) => [String(category.id), category]));
+      const products: Product[] = rawProducts.flatMap((item: any) => {
+        const name = String(item?.name || "").trim();
+        if (!name) return [];
+        const itemCategories = Array.isArray(item.categories) ? item.categories : [];
+        const primary = itemCategories[0];
+        const category = String(primary?.name || primary || "بدون دسته");
+        const descriptionSource = item.short_description || item.description || "";
+        const description = typeof document === "undefined" ? String(descriptionSource) : new DOMParser().parseFromString(String(descriptionSource), "text/html").body.textContent?.replace(/\\s+/g, " ").trim() || "";
+        const image = item.images?.[0]?.src || item.main_image || item.image || "";
+        return [{ name, englishName: "", description, price: String(item.prices?.price ?? item.price ?? ""), image, category }];
+      });
+      const grouped = new Map<string, Category>();
+      for (const item of rawProducts) {
+        const name = String(item?.name || "").trim();
+        if (!name) continue;
+        const primary = Array.isArray(item.categories) ? item.categories[0] : null;
+        const title = String(primary?.name || primary || "بدون دسته");
+        const sourceCategory = primary?.id != null ? categoryById.get(String(primary.id)) : rawCategories.find((category: any) => category.name === title);
+        const image = sourceCategory?.image?.src || sourceCategory?.image || products.find((product) => product.name === name)?.image || "";
+        const entry = grouped.get(title) || { title, image, items: [] };
+        entry.items.push(name);
+        if (!entry.image) entry.image = image;
+        grouped.set(title, entry);
+      }
+      for (const category of rawCategories) {
+        const title = String(category?.name || "");
+        if (!title || grouped.has(title)) continue;
+        grouped.set(title, { title, image: category.image?.src || "", items: [] });
+      }
+      const categories = [...grouped.values()];
+      const source = url.trim() || "WooCommerce Store API";
+      setMenu({ source, products, categories, stats: { products: products.length, categories: categories.length }, truncated: false });
+      if (!products.length) throw new Error("در فایل انتخاب‌شده محصولی پیدا نشد.");
+      setManualError("");
+    } catch (e) {
+      setManualError(e instanceof Error ? e.message : "خواندن فایل‌های JSON ناموفق بود.");
+    }
   }
   async function send() {
     if (!menu) return;
@@ -79,6 +127,20 @@ export default function Home() {
         <div className="hint">لینک باید عمومی باشد. تصویرها به صورت آدرس اصلی تصویر در داده‌ها ثبت می‌شوند.</div>
       </form>
       {error && <div className="alert error" role="alert">{error}</div>}
+      <details className="manual-import">
+        <summary>اگر سایت ۵۰۴ می‌دهد: بارگذاری JSON ووکامرس</summary>
+        <p>در تب تازه، دو آدرس زیر را باز کنید و فایل JSON را ذخیره کنید؛ سپس هر دو فایل را اینجا انتخاب و وارد کنید.</p>
+        <div className="manual-links">
+          <a href="https://lamizcoffee.com/wp-json/wc/store/v1/products?per_page=100&page=1" target="_blank" rel="noreferrer">JSON محصولات لمیز ↗</a>
+          <a href="https://lamizcoffee.com/wp-json/wc/store/v1/products/categories?per_page=100" target="_blank" rel="noreferrer">JSON دسته‌بندی‌های لمیز ↗</a>
+        </div>
+        <div className="manual-files">
+          <label className="file-label">فایل محصولات<input type="file" accept=".json,application/json" onChange={(event)=>setWooProductsFile(event.target.files?.[0] || null)} /></label>
+          <label className="file-label">فایل دسته‌بندی‌ها<input type="file" accept=".json,application/json" onChange={(event)=>setWooCategoriesFile(event.target.files?.[0] || null)} /></label>
+          <button type="button" className="secondary" onClick={importWooJson}>ساخت پیش‌نمایش از JSON</button>
+        </div>
+        {manualError && <div className="alert error" role="alert">{manualError}</div>}
+      </details>
     </section>
     {menu && <section className="panel">
       <div className="section-head"><div className="section-title"><span className="num">۲</span>بازبینی اطلاعات استخراج‌شده</div><span className="badge">آماده انتقال</span></div>
