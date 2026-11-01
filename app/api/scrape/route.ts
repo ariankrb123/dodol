@@ -137,9 +137,9 @@ async function fetchApi(url: string, deadline: number, accept = "application/jso
   }
   return response;
 }
-async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: number): Promise<{ products: Product[]; categories: Category[]; truncated: boolean } | null> {
+async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: number, force = false): Promise<{ products: Product[]; categories: Category[]; truncated: boolean } | null> {
   const markup = $.html().toLowerCase();
-  if (!markup.includes("woocommerce") && !markup.includes("wc-blocks")) return null;
+  if (!force && !markup.includes("woocommerce") && !markup.includes("wc-blocks")) return null;
   const origin = new URL(base).origin;
   const endpoint = new URL("/wp-json/wc/store/v1/products", origin);
   const rawProducts: any[] = [];
