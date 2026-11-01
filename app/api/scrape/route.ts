@@ -40,11 +40,12 @@ async function publicUrl(value: string) {
 }
 async function fetchPublicPage(initial: string) {
   let current = initial;
+  const deadline = Date.now() + 18000;
   for (let hop = 0; hop <= 4; hop++) {
     if (!(await publicUrl(current))) throw new Error("PRIVATE_URL");
     const response = await fetch(current, {
       headers: { "User-Agent": "DodolMenuImporter/1.0 (+https://github.com/ariankrb123/dodol)", Accept: "text/html,application/xhtml+xml" },
-      signal: AbortSignal.timeout(18000), redirect: "manual",
+      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), redirect: "manual",
     });
     if ([301,302,303,307,308].includes(response.status)) {
       const location = response.headers.get("location");
