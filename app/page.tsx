@@ -58,7 +58,7 @@ export default function Home() {
         const title = String(primary?.name || primary || "بدون دسته");
         const sourceCategory = primary?.id != null ? categoryById.get(String(primary.id)) : rawCategories.find((category: any) => category.name === title);
         const image = sourceCategory?.image?.src || sourceCategory?.image || products.find((product) => product.name === name)?.image || "";
-        const entry = grouped.get(title) || { title, image, items: [] };
+        const entry: Category = grouped.get(title) || { title, image, items: [] };
         entry.items.push(name);
         if (!entry.image) entry.image = image;
         grouped.set(title, entry);
