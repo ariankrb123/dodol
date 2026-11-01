@@ -1,5 +1,5 @@
 "use client";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 
 type Product = { name: string; englishName: string; description: string; price: string; image: string; category: string };
 type Category = { title: string; image: string; items: string[] };
@@ -9,6 +9,8 @@ export default function Home() {
   const [menu, setMenu] = useState<MenuData | null>(null);
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sendError, setSendError] = useState("");
@@ -35,13 +37,30 @@ export default function Home() {
     } catch (e) { setSendError(e instanceof Error ? e.message : "ارسال ناموفق بود."); }
     finally { setSending(false); }
   }
-  const categoryCount = useMemo(() => menu?.categories.length || 0, [menu]);
-  function download() {
-    if (!menu) return;
-    const blob = new Blob([JSON.stringify(menu, null, 2)], { type: "application/json;charset=utf-8" });
+  const categoryCount = menu?.categories.length || 0;
+  function saveBlob(blob: Blob, filename: string) {
     const anchor = document.createElement("a");
-    anchor.href = URL.createObjectURL(blob); anchor.download = "cafe-menu.json"; anchor.click();
-    URL.revokeObjectURL(anchor.href);
+    const objectUrl = URL.createObjectURL(blob);
+    anchor.href = objectUrl; anchor.download = filename; anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+  function downloadJson(kind: "products" | "categories") {
+    if (!menu) return;
+    const data = kind === "products" ? menu.products : menu.categories;
+    saveBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }), "cafe-menu-" + kind + ".json");
+  }
+  async function downloadExcel() {
+    if (!menu) return;
+    setExporting(true); setExportError("");
+    try {
+      const response = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(menu) });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || "ساخت فایل Excel ناموفق بود.");
+      }
+      saveBlob(await response.blob(), "cafe-menu.xlsx");
+    } catch (e) { setExportError(e instanceof Error ? e.message : "ساخت فایل Excel ناموفق بود."); }
+    finally { setExporting(false); }
   }
   return <main className="shell">
     <header className="topbar">
@@ -64,12 +83,20 @@ export default function Home() {
     {menu && <section className="panel">
       <div className="section-head"><div className="section-title"><span className="num">۲</span>بازبینی اطلاعات استخراج‌شده</div><span className="badge">آماده انتقال</span></div>
       <div className="counts"><span className="badge">{menu.products.length} محصول</span><span className="badge">{categoryCount} دسته‌بندی</span></div>
-      <div className="toolbar"><span className="label" style={{margin:0}}>محصولات و دسته‌بندی‌های صفحه</span><button type="button" className="secondary" onClick={download}>↓ ذخیره فایل JSON</button></div>
+      <div className="toolbar">
+        <span className="label" style={{margin:0}}>محصولات و دسته‌بندی‌های صفحه</span>
+        <div className="export-actions">
+          <button type="button" className="secondary" onClick={()=>downloadJson("products")}>JSON محصولات</button>
+          <button type="button" className="secondary" onClick={()=>downloadJson("categories")}>JSON دسته‌بندی‌ها</button>
+          <button type="button" className="primary" onClick={downloadExcel} disabled={exporting}>{exporting ? "در حال ساخت…" : "خروجی Excel"}</button>
+        </div>
+      </div>
       <div className="table-wrap"><table><thead><tr><th>محصول</th><th>دسته‌بندی</th><th>قیمت</th><th>توضیحات</th></tr></thead><tbody>
         {menu.products.map((p,i)=><tr key={i}><td><div className="product">{p.image ? <img className="thumb" src={p.image} alt="" /> : <div className="thumb" />}<div>{p.name}{p.englishName && <div className="sub">{p.englishName}</div>}</div></div></td><td><span className="cat">{p.category}</span></td><td>{p.price || "—"}</td><td><div className="sub">{p.description || "—"}</div></td></tr>)}
       </tbody></table></div>
       <div className="footer"><div className="footer-note">منبع: <span dir="ltr">{menu.source}</span><br/>دسته‌ها همراه با آیتم‌ها و تصویر مرتبط نیز ارسال می‌شوند.</div><button className="primary" onClick={send} disabled={sending || menu.products.length===0}>{sending ? "در حال انتقال…" : "دریافت توکن و ارسال منو"} <span aria-hidden>←</span></button></div>
       {notice && <div className="alert success" role="status">{notice}</div>}
+      {exportError && <div className="alert error" role="alert">{exportError}</div>}
       {sendError && <div className="alert error" role="alert">{sendError}</div>}
     </section>}
     <div style={{textAlign:"center",paddingTop:24,color:"#a2aaa5",fontSize:11}}>دودول · ابزار ورود اطلاعات منوی کافه</div>
