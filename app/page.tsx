@@ -31,7 +31,7 @@ export default function Home() {
       const response = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(menu) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.details ? `${result.error} — ${result.details}` : result.error || "ارسال ناموفق بود.");
-      setNotice(`پذیرش انتقال تأیید شد؛ ${result.counts.products} محصول و ${result.counts.categories} دسته‌بندی ارسال شد.`);
+      setNotice(result.verified ? `انتقال تأیید شد؛ ${result.counts.products} محصول و ${result.counts.categories} دسته‌بندی ثبت شده‌اند.` : `درخواست پذیرفته شد؛ ${result.counts.products} محصول و ${result.counts.categories} دسته‌بندی ارسال شدند. API مقصد تعداد ثبت‌شده را گزارش نکرد، پس کامل بودن انتقال قابل‌تأیید نیست.`);
     } catch (e) { setSendError(e instanceof Error ? e.message : "ارسال ناموفق بود."); }
     finally { setSending(false); }
   }
