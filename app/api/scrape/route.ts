@@ -38,15 +38,31 @@ async function publicUrl(value: string) {
     return addresses.length > 0 && addresses.every(({ address }) => !unsafeIp(address));
   } catch { return false; }
 }
-async function fetchPublicPage(initial: string) {
+const REQUEST_BUDGET_MS = 22000;
+const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+async function fetchPublicPage(initial: string, deadline: number) {
   let current = initial;
-  const deadline = Date.now() + 18000;
   for (let hop = 0; hop <= 4; hop++) {
     if (!(await publicUrl(current))) throw new Error("PRIVATE_URL");
-    const response = await fetch(current, {
-      headers: { "User-Agent": "DodolMenuImporter/1.0 (+https://github.com/ariankrb123/dodol)", Accept: "text/html,application/xhtml+xml" },
-      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), redirect: "manual",
-    });
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("FETCH_TIMEOUT");
+      try {
+        response = await fetch(current, {
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0; +https://github.com/ariankrb123/dodol)", Accept: "text/html,application/xhtml+xml" },
+          signal: AbortSignal.timeout(Math.min(8000, remaining)), redirect: "manual",
+        });
+      } catch (error) {
+        if (attempt === 2 || Date.now() + 700 >= deadline) throw error;
+        await wait(500 * (attempt + 1));
+        continue;
+      }
+      if (![429, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      await response.body?.cancel();
+      await wait(500 * (attempt + 1));
+    }
+    if (!response) throw new Error("FETCH_TIMEOUT");
     if ([301,302,303,307,308].includes(response.status)) {
       const location = response.headers.get("location");
       if (!location || hop === 4) throw new Error("TOO_MANY_REDIRECTS");
@@ -106,6 +122,49 @@ function pageProducts($: cheerio.CheerioAPI, base: string): Product[] {
   });
   return products;
 }
+async function scrapeVoria($: cheerio.CheerioAPI, base: string, deadline: number): Promise<{ products: Product[]; categories: Category[] } | null> {
+  const scripts = $("script").map((_, element) => $(element).html() || "").get().join("\n");
+  if (!scripts.includes("VORIACAFE_CONFIG") && !base.includes("voriacafe.com")) return null;
+  const match = scripts.match(/VORIACAFE_CONFIG\\s*=\\s*\\{[\\s\\S]*?AJAX_URL\\s*:\\s*['"]([^'"]+)['"]/);
+  if (!match) return null;
+  const endpoint = new URL(match[1], base);
+  if (endpoint.origin !== new URL(base).origin) throw new Error("VORIA_CROSS_ORIGIN");
+  endpoint.searchParams.set("action", "get_products");
+  endpoint.searchParams.set("grouped", "true");
+  if (!(await publicUrl(endpoint.href))) throw new Error("PRIVATE_URL");
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error("FETCH_TIMEOUT");
+  const response = await fetch(endpoint.href, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0)", Accept: "application/json" },
+    signal: AbortSignal.timeout(Math.min(8000, remaining)), redirect: "manual",
+  });
+  if (!response.ok) throw new Error(`VORIA_API_${response.status}`);
+  const body = await response.json();
+  if (!Array.isArray(body?.products)) throw new Error("VORIA_INVALID_DATA");
+  const products: Product[] = [];
+  const categories: Category[] = [];
+  for (const group of body.products) {
+    const title = clean(group?.name);
+    if (!title) continue;
+    const groupProducts = Array.isArray(group.products) ? group.products : [];
+    const items: string[] = [];
+    for (const item of groupProducts) {
+      const name = clean(item?.name);
+      if (!name) continue;
+      items.push(name);
+      products.push({
+        name, englishName: clean(item.english_name || item.alternateName),
+        description: clean(item.description),
+        price: clean(item.price ?? item.price_amount),
+        image: absoluteUrl(item.main_image || item.image || item.image_url, base),
+        category: title,
+      });
+    }
+    const categoryImage = group.image || group.image_url || group.icon || groupProducts.find((item: any) => item.main_image || item.image)?.main_image || groupProducts.find((item: any) => item.image)?.image;
+    categories.push({ title, image: absoluteUrl(categoryImage, base), items });
+  }
+  return { products, categories };
+}
 function categoriesFrom($: cheerio.CheerioAPI, products: Product[], base: string): Category[] {
   const map = new Map<string, Category>();
   for (const product of products) {
@@ -130,8 +189,12 @@ export async function POST(request: NextRequest) {
     let parsed: URL;
     try { parsed = new URL(input); } catch { return NextResponse.json({ error: "لینک معتبر وارد کنید." }, { status: 400 }); }
     if (!(await publicUrl(parsed.href))) return NextResponse.json({ error: "فقط لینک عمومی HTTP یا HTTPS مجاز است." }, { status: 400 });
-    const response = await fetchPublicPage(parsed.href);
-    if (!response.ok) return NextResponse.json({ error: `صفحه با وضعیت ${response.status} دریافت نشد.` }, { status: 422 });
+    const deadline = Date.now() + REQUEST_BUDGET_MS;
+    const response = await fetchPublicPage(parsed.href, deadline);
+    if (!response.ok) {
+      const hint = response.status === 504 ? "سایت مبدأ پاسخ ۵۰۴ داد؛ درخواست خودکار دوباره تلاش شد. کمی بعد دوباره امتحان کنید یا لینک مستقیم صفحه منو را بدهید." : `صفحه با وضعیت ${response.status} دریافت نشد.`;
+      return NextResponse.json({ error: hint }, { status: 422 });
+    }
     const type = response.headers.get("content-type") || "";
     if (!type.includes("text/html") && !type.includes("application/xhtml+xml")) return NextResponse.json({ error: "آدرس واردشده صفحه HTML نیست." }, { status: 422 });
     const length = Number(response.headers.get("content-length") || 0);
@@ -139,15 +202,22 @@ export async function POST(request: NextRequest) {
     const html = await response.text();
     if (html.length > 6_000_000) return NextResponse.json({ error: "حجم صفحه بیش از ۶ مگابایت است." }, { status: 413 });
     const $ = cheerio.load(html);
-    const products = jsonLdProducts($, response.url);
-    const fromPage = pageProducts($, response.url);
-    const keys = new Set(products.map((p) => p.name.toLocaleLowerCase("fa")));
-    for (const p of fromPage) if (!keys.has(p.name.toLocaleLowerCase("fa"))) products.push(p);
-    const categories = categoriesFrom($, products, response.url);
+    const specialized = await scrapeVoria($, response.url, deadline);
+    const products = specialized?.products || jsonLdProducts($, response.url);
+    if (!specialized) {
+      const fromPage = pageProducts($, response.url);
+      const keys = new Set(products.map((p) => p.name.toLocaleLowerCase("fa")));
+      for (const p of fromPage) if (!keys.has(p.name.toLocaleLowerCase("fa"))) products.push(p);
+    }
+    const categories = specialized?.categories || categoriesFrom($, products, response.url);
     return NextResponse.json({ source: response.url, products, categories, stats: { products: products.length, categories: categories.length } });
   } catch (error) {
     if (error instanceof Error && error.message === "PRIVATE_URL") return NextResponse.json({ error: "آدرس‌های شبکه داخلی مجاز نیستند." }, { status: 400 });
-    const message = error instanceof Error && error.name === "TimeoutError" ? "زمان دریافت صفحه تمام شد." : "خواندن صفحه ناموفق بود. لینک عمومی و دسترسی سایت را بررسی کنید.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    if (error instanceof Error && /^VORIA_API_/.test(error.message)) {
+      const status = Number(error.message.replace("VORIA_API_", ""));
+      return NextResponse.json({ error: status === 504 ? "API منوی کافه پاسخ ۵۰۴ داد. کمی بعد دوباره امتحان کنید." : `دریافت داده از API منوی کافه ناموفق بود (HTTP ${status}).` }, { status: 502 });
+    }
+    const message = error instanceof Error && (error.name === "TimeoutError" || error.message === "FETCH_TIMEOUT") ? "زمان خواندن صفحه تمام شد؛ سایت منبع پاسخ نداد. لینک مستقیم صفحه منو را امتحان کنید." : "خواندن صفحه ناموفق بود. لینک عمومی و دسترسی سایت را بررسی کنید.";
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 }
