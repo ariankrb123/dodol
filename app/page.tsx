@@ -3,7 +3,7 @@ import { FormEvent, useState } from "react";
 
 type Product = { name: string; englishName: string; description: string; price: string; image: string; category: string };
 type Category = { title: string; image: string; items: string[] };
-type MenuData = { source: string; products: Product[]; categories: Category[]; stats: { products: number; categories: number } };
+type MenuData = { source: string; products: Product[]; categories: Category[]; stats: { products: number; categories: number }; truncated?: boolean };
 export default function Home() {
   const [url, setUrl] = useState("");
   const [menu, setMenu] = useState<MenuData | null>(null);
@@ -82,7 +82,7 @@ export default function Home() {
     </section>
     {menu && <section className="panel">
       <div className="section-head"><div className="section-title"><span className="num">۲</span>بازبینی اطلاعات استخراج‌شده</div><span className="badge">آماده انتقال</span></div>
-      <div className="counts"><span className="badge">{menu.products.length} محصول</span><span className="badge">{categoryCount} دسته‌بندی</span></div>
+      <div className="counts"><span className="badge">{menu.products.length} محصول</span><span className="badge">{categoryCount} دسته‌بندی</span></div>\n      {menu.truncated && <div className="alert info">به دلیل محدودیت صفحه‌بندی، فقط ۵۰۰ محصول اول از سرویس فروشگاه دریافت شده‌اند.</div>}
       <div className="toolbar">
         <span className="label" style={{margin:0}}>محصولات و دسته‌بندی‌های صفحه</span>
         <div className="export-actions">
