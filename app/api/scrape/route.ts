@@ -125,7 +125,7 @@ function pageProducts($: cheerio.CheerioAPI, base: string): Product[] {
 async function scrapeVoria($: cheerio.CheerioAPI, base: string, deadline: number): Promise<{ products: Product[]; categories: Category[] } | null> {
   const scripts = $("script").map((_, element) => $(element).html() || "").get().join("\n");
   if (!scripts.includes("VORIACAFE_CONFIG") && !base.includes("voriacafe.com")) return null;
-  const match = scripts.match(/VORIACAFE_CONFIG\\s*=\\s*\\{[\\s\\S]*?AJAX_URL\\s*:\\s*['"]([^'"]+)['"]/);
+  const match = scripts.match(/AJAX_URL\s*:\s*['"]([^'"]+)['"]/);
   if (!match) return null;
   const endpoint = new URL(match[1], base);
   if (endpoint.origin !== new URL(base).origin) throw new Error("VORIA_CROSS_ORIGIN");
@@ -134,10 +134,19 @@ async function scrapeVoria($: cheerio.CheerioAPI, base: string, deadline: number
   if (!(await publicUrl(endpoint.href))) throw new Error("PRIVATE_URL");
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Error("FETCH_TIMEOUT");
-  const response = await fetch(endpoint.href, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0)", Accept: "application/json" },
-    signal: AbortSignal.timeout(Math.min(8000, remaining)), redirect: "manual",
-  });
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const timeLeft = deadline - Date.now();
+    if (timeLeft <= 0) throw new Error("FETCH_TIMEOUT");
+    response = await fetch(endpoint.href, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0)", Accept: "application/json" },
+      signal: AbortSignal.timeout(Math.min(6000, timeLeft)), redirect: "manual",
+    });
+    if (![429, 502, 503, 504].includes(response.status) || attempt === 2) break;
+    await response.body?.cancel();
+    await wait(400 * (attempt + 1));
+  }
+  if (!response) throw new Error("FETCH_TIMEOUT");
   if (!response.ok) throw new Error(`VORIA_API_${response.status}`);
   const body = await response.json();
   if (!Array.isArray(body?.products)) throw new Error("VORIA_INVALID_DATA");
