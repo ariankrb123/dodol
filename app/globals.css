@@ -51,3 +51,12 @@ td { padding:13px 14px;border-top:1px solid #eef0ec;vertical-align:middle; }
 .export-actions button { font-size:12px; padding:10px 13px; }
 @media(max-width:700px){ .export-actions { width:100%; } .export-actions button { flex:1 1 auto; } }
 .info { background:#fff8e8; color:#836324; }
+
+.manual-import { margin-top:16px; border-top:1px solid var(--line); padding-top:14px; color:#65736b; font-size:12px; }
+.manual-import summary { cursor:pointer; font-weight:700; color:#44584c; }
+.manual-import p { line-height:1.8; }
+.manual-links,.manual-files { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px; }
+.manual-links a { color:var(--green); text-decoration:underline; text-underline-offset:3px; }
+.file-label { display:grid; gap:6px; color:#59665f; font-size:11px; }
+.file-label input { max-width:260px; padding:8px; font-size:11px; }
+@media(max-width:700px){ .manual-files { align-items:stretch; flex-direction:column; } .file-label input { max-width:100%; } }
