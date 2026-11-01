@@ -122,6 +122,77 @@ function pageProducts($: cheerio.CheerioAPI, base: string): Product[] {
   });
   return products;
 }
+async function fetchApi(url: string, deadline: number, accept = "application/json") {
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const timeLeft = deadline - Date.now();
+    if (timeLeft <= 0) throw new Error("FETCH_TIMEOUT");
+    response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0)", Accept: accept },
+      signal: AbortSignal.timeout(Math.min(6000, timeLeft)), redirect: "manual",
+    });
+    if (![429, 502, 503, 504].includes(response.status) || attempt === 2) break;
+    await response.body?.cancel();
+    await wait(400 * (attempt + 1));
+  }
+  return response;
+}
+async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: number): Promise<{ products: Product[]; categories: Category[] } | null> {
+  const markup = $.html().toLowerCase();
+  if (!markup.includes("woocommerce") && !markup.includes("wc-blocks")) return null;
+  const origin = new URL(base).origin;
+  const endpoint = new URL("/wp-json/wc/store/v1/products", origin);
+  const rawProducts: any[] = [];
+  let truncated = false;
+  for (let page = 1; page <= 5; page++) {
+    const url = new URL(endpoint);
+    url.searchParams.set("per_page", "100");
+    url.searchParams.set("page", String(page));
+    if (!(await publicUrl(url.href))) throw new Error("PRIVATE_URL");
+    const response = await fetchApi(url.href, deadline);
+    if (!response?.ok) {
+      if (page === 1) return null;
+      throw new Error(`WOO_API_${response?.status || 502}`);
+    }
+    const batch = await response.json();
+    if (!Array.isArray(batch)) return null;
+    rawProducts.push(...batch);
+    if (batch.length < 100) break;
+    if (page === 5) truncated = true;
+  }
+  const categoriesById = new Map<number, { title: string; image: string }>();
+  const categoryEndpoint = new URL("/wp-json/wc/store/v1/products/categories", origin);
+  categoryEndpoint.searchParams.set("per_page", "100");
+  if (await publicUrl(categoryEndpoint.href)) {
+    const response = await fetchApi(categoryEndpoint.href, deadline);
+    if (response?.ok) {
+      const entries = await response.json();
+      if (Array.isArray(entries)) for (const category of entries) {
+        categoriesById.set(Number(category.id), { title: clean(category.name), image: absoluteUrl(category.image?.src, base) });
+      }
+    }
+  }
+  const products: Product[] = [];
+  const grouped = new Map<string, Category>();
+  for (const item of rawProducts) {
+    const name = clean(item?.name);
+    if (!name) continue;
+    const itemCategories = Array.isArray(item.categories) ? item.categories : [];
+    const primary = itemCategories.find((category: any) => category.id && categoriesById.has(Number(category.id))) || itemCategories[0];
+    const categoryName = clean(primary?.name) || "بدون دسته";
+    const categoryData = categoriesById.get(Number(primary?.id));
+    const descriptionHtml = item.short_description || item.description || "";
+    const description = clean(cheerio.load(String(descriptionHtml)).text());
+    const image = absoluteUrl(item.images?.[0]?.src, base);
+    const price = item.prices?.price ?? item.prices?.regular_price ?? "";
+    products.push({ name, englishName: "", description, price: String(price), image, category: categoryName });
+    const group = grouped.get(categoryName) || { title: categoryName, image: categoryData?.image || image, items: [] };
+    group.items.push(name);
+    if (!group.image) group.image = image;
+    grouped.set(categoryName, group);
+  }
+  return { products, categories: [...grouped.values()], truncated };
+}
 async function scrapeVoria($: cheerio.CheerioAPI, base: string, deadline: number): Promise<{ products: Product[]; categories: Category[] } | null> {
   const scripts = $("script").map((_, element) => $(element).html() || "").get().join("\n");
   if (!scripts.includes("VORIACAFE_CONFIG") && !base.includes("voriacafe.com")) return null;
@@ -212,19 +283,22 @@ export async function POST(request: NextRequest) {
     if (html.length > 6_000_000) return NextResponse.json({ error: "حجم صفحه بیش از ۶ مگابایت است." }, { status: 413 });
     const $ = cheerio.load(html);
     const specialized = await scrapeVoria($, response.url, deadline);
-    const products = specialized?.products || jsonLdProducts($, response.url);
-    if (!specialized) {
+    const commerce = specialized ? null : await scrapeWooCommerce($, response.url, deadline);
+    const extracted = specialized || commerce;
+    const products = extracted?.products || jsonLdProducts($, response.url);
+    if (!extracted) {
       const fromPage = pageProducts($, response.url);
       const keys = new Set(products.map((p) => p.name.toLocaleLowerCase("fa")));
       for (const p of fromPage) if (!keys.has(p.name.toLocaleLowerCase("fa"))) products.push(p);
     }
-    const categories = specialized?.categories || categoriesFrom($, products, response.url);
-    return NextResponse.json({ source: response.url, products, categories, stats: { products: products.length, categories: categories.length } });
+    const categories = extracted?.categories || categoriesFrom($, products, response.url);
+    const truncated = Boolean(commerce?.truncated);
+    return NextResponse.json({ source: response.url, products, categories, stats: { products: products.length, categories: categories.length }, truncated });
   } catch (error) {
     if (error instanceof Error && error.message === "PRIVATE_URL") return NextResponse.json({ error: "آدرس‌های شبکه داخلی مجاز نیستند." }, { status: 400 });
-    if (error instanceof Error && /^VORIA_API_/.test(error.message)) {
-      const status = Number(error.message.replace("VORIA_API_", ""));
-      return NextResponse.json({ error: status === 504 ? "API منوی کافه پاسخ ۵۰۴ داد. کمی بعد دوباره امتحان کنید." : `دریافت داده از API منوی کافه ناموفق بود (HTTP ${status}).` }, { status: 502 });
+    if (error instanceof Error && /^(VORIA|WOO)_API_/.test(error.message)) {
+      const status = Number(error.message.slice(error.message.lastIndexOf("_") + 1));
+      return NextResponse.json({ error: status === 504 ? "سرویس منوی سایت پاسخ ۵۰۴ داد. کمی بعد دوباره امتحان کنید." : `دریافت داده از سرویس منوی سایت ناموفق بود (HTTP ${status}).` }, { status: 502 });
     }
     const message = error instanceof Error && (error.name === "TimeoutError" || error.message === "FETCH_TIMEOUT") ? "زمان خواندن صفحه تمام شد؛ سایت منبع پاسخ نداد. لینک مستقیم صفحه منو را امتحان کنید." : "خواندن صفحه ناموفق بود. لینک عمومی و دسترسی سایت را بررسی کنید.";
     return NextResponse.json({ error: message }, { status: 502 });
