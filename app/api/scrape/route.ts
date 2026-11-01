@@ -127,10 +127,18 @@ async function fetchApi(url: string, deadline: number, accept = "application/jso
   for (let attempt = 0; attempt < 3; attempt++) {
     const timeLeft = deadline - Date.now();
     if (timeLeft <= 0) throw new Error("FETCH_TIMEOUT");
-    response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0)", Accept: accept },
-      signal: AbortSignal.timeout(Math.min(6000, timeLeft)), redirect: "manual",
-    });
+    try {
+      response = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0)", Accept: accept },
+        signal: AbortSignal.timeout(Math.min(12000, timeLeft)), redirect: "manual",
+      });
+    } catch (error) {
+      // Some legitimate WooCommerce endpoints take slightly more than six seconds.
+      // Retry one transient network timeout only when the request still has budget.
+      if (attempt >= 1 || deadline - Date.now() < 2500) throw error;
+      await wait(350);
+      continue;
+    }
     if (![429, 502, 503, 504].includes(response.status) || attempt === 2) break;
     await response.body?.cancel();
     await wait(400 * (attempt + 1));
@@ -195,11 +203,18 @@ async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: 
     const url = new URL(endpoint);
     url.searchParams.set("per_page", "100");
     url.searchParams.set("page", String(page));
-    if (!(await publicUrl(url.href))) throw new Error("PRIVATE_URL");
-    const response = await fetchApi(url.href, deadline);
+    if (!(await publicUrl(url.href))) return null;
+    let response: Response | undefined;
+    try { response = await fetchApi(url.href, deadline); }
+    catch {
+      if (!rawProducts.length) return null;
+      truncated = true;
+      break;
+    }
     if (!response?.ok) {
-      if (page === 1) return null;
-      throw new Error(`WOO_API_${response?.status || 502}`);
+      if (!rawProducts.length) return null;
+      truncated = true;
+      break;
     }
     const batch = await response.json();
     if (!Array.isArray(batch)) return null;
@@ -211,13 +226,15 @@ async function scrapeWooCommerce($: cheerio.CheerioAPI, base: string, deadline: 
   const categoryEndpoint = new URL("/wp-json/wc/store/v1/products/categories", origin);
   categoryEndpoint.searchParams.set("per_page", "100");
   if (await publicUrl(categoryEndpoint.href)) {
-    const response = await fetchApi(categoryEndpoint.href, deadline);
-    if (response?.ok) {
-      const entries = await response.json();
-      if (Array.isArray(entries)) for (const category of entries) {
-        categoriesById.set(Number(category.id), { title: clean(category.name), image: absoluteUrl(category.image?.src, base) });
+    try {
+      const response = await fetchApi(categoryEndpoint.href, deadline);
+      if (response?.ok) {
+        const entries = await response.json();
+        if (Array.isArray(entries)) for (const category of entries) {
+          categoriesById.set(Number(category.id), { title: clean(category.name), image: absoluteUrl(category.image?.src, base) });
+        }
       }
-    }
+    } catch { /* Product categories are embedded in the product response; keep them if this optional lookup is slow. */ }
   }
   const products: Product[] = [];
   const grouped = new Map<string, Category>();
@@ -258,7 +275,7 @@ async function scrapeVoria($: cheerio.CheerioAPI, base: string, deadline: number
     if (timeLeft <= 0) throw new Error("FETCH_TIMEOUT");
     response = await fetch(endpoint.href, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; DodolMenuImporter/1.0)", Accept: "application/json" },
-      signal: AbortSignal.timeout(Math.min(6000, timeLeft)), redirect: "manual",
+      signal: AbortSignal.timeout(Math.min(12000, timeLeft)), redirect: "manual",
     });
     if (![429, 502, 503, 504].includes(response.status) || attempt === 2) break;
     await response.body?.cancel();
@@ -317,11 +334,17 @@ export async function POST(request: NextRequest) {
     try { parsed = new URL(input); } catch { return NextResponse.json({ error: "لینک معتبر وارد کنید." }, { status: 400 }); }
     if (!(await publicUrl(parsed.href))) return NextResponse.json({ error: "فقط لینک عمومی HTTP یا HTTPS مجاز است." }, { status: 400 });
     const deadline = Date.now() + REQUEST_BUDGET_MS;
+    let directStoreAttempted = false;
     if (["lamizcoffee.com", "www.lamizcoffee.com"].includes(parsed.hostname.toLowerCase())) {
-      const directStore = await scrapeWooCommerce(cheerio.load('<html><body></body></html>'), parsed.href, deadline, true);
-      if (directStore) {
-        return NextResponse.json({ source: parsed.href, products: directStore.products, categories: directStore.categories, stats: { products: directStore.products.length, categories: directStore.categories.length }, truncated: directStore.truncated });
-      }
+      directStoreAttempted = true;
+      // Leave time to parse the actual menu page if the Store API is slow or blocked.
+      const storeDeadline = Math.min(deadline - 8000, Date.now() + 11000);
+      try {
+        const directStore = await scrapeWooCommerce(cheerio.load('<html><body></body></html>'), parsed.href, storeDeadline, true);
+        if (directStore) {
+          return NextResponse.json({ source: parsed.href, products: directStore.products, categories: directStore.categories, stats: { products: directStore.products.length, categories: directStore.categories.length }, truncated: directStore.truncated });
+        }
+      } catch { /* Fall through to HTML extraction when the host API cannot be reached. */ }
     }
     const response = await fetchPublicPage(parsed.href, deadline);
     if (!response.ok) {
@@ -336,8 +359,8 @@ export async function POST(request: NextRequest) {
     if (html.length > 6_000_000) return NextResponse.json({ error: "حجم صفحه بیش از ۶ مگابایت است." }, { status: 413 });
     const $ = cheerio.load(html);
     const specialized = await scrapeVoria($, response.url, deadline);
-    const commerce = specialized ? null : await scrapeWooCommerce($, response.url, deadline);
-    const wordpress = specialized || commerce ? null : await scrapeWordPressRest(response.url, deadline);
+    const commerce = specialized || directStoreAttempted ? null : await scrapeWooCommerce($, response.url, deadline);
+    const wordpress = specialized || commerce || directStoreAttempted ? null : await scrapeWordPressRest(response.url, deadline);
     const extracted = specialized || commerce || wordpress;
     const products = extracted?.products || jsonLdProducts($, response.url);
     if (!extracted) {
